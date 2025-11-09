@@ -11,11 +11,20 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
+import bcrypt
 import jwt
 import base64
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+from dotenv import load_dotenv
+import os
+from pathlib import Path
+
+# --- Load environment variables properly ---
+env_path = Path(__file__).resolve().parent / ".env"
+if env_path.exists():
+    load_dotenv(dotenv_path=str(env_path))
+else:
+    print("⚠️  Warning: .env file not found at", env_path)
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -28,8 +37,31 @@ security = HTTPBearer()
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 JWT_ALGORITHM = "HS256"
 
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Create the main app
 app = FastAPI()
+
+# Configure CORS - MUST be before including routers
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
 api_router = APIRouter(prefix="/api")
 
 # Models
@@ -112,10 +144,29 @@ class WorkerLog(BaseModel):
 
 # Helper functions
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # bcrypt has a 72-byte limit, so truncate if necessary
+    # Use bcrypt directly to avoid passlib's backend initialization issues
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        # Truncate to 72 bytes
+        password_bytes = password_bytes[:72]
+    
+    # Hash using bcrypt directly
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    # Return as string (bcrypt returns bytes)
+    return hashed.decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    # bcrypt has a 72-byte limit, so truncate if necessary
+    password_bytes = plain_password.encode('utf-8')
+    if len(password_bytes) > 72:
+        # Truncate to 72 bytes
+        password_bytes = password_bytes[:72]
+    
+    # Verify using bcrypt directly
+    hashed_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(password_bytes, hashed_bytes)
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
@@ -164,36 +215,53 @@ async def update_priority(complaint_id: str, count: int):
 # Auth Routes
 @api_router.post("/auth/register")
 async def register(user_data: UserRegister):
-    # Check if user exists
-    existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Admin authorization check
-    if user_data.role == 'admin':
-        admin_email = os.environ.get('ADMIN_EMAIL')
-        admin_password = os.environ.get('ADMIN_PASSWORD')
+    try:
+        # Check if user exists
+        existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
         
-        if user_data.email != admin_email or user_data.password != admin_password:
-            raise HTTPException(status_code=403, detail="Unauthorized: You are not authorized to register as admin")
-    
-    # Create user
-    user = User(
-        email=user_data.email,
-        full_name=user_data.full_name,
-        role=user_data.role,
-        floor=user_data.floor,
-        room=user_data.room,
-        specialization=user_data.specialization
-    )
-    
-    user_dict = user.model_dump()
-    user_dict['password_hash'] = hash_password(user_data.password)
-    
-    await db.users.insert_one(user_dict)
-    
-    token = create_access_token({"sub": user.id})
-    return {"token": token, "user": user.model_dump()}
+        # Admin authorization check
+        if user_data.role == 'admin':
+            admin_email = os.environ.get('ADMIN_EMAIL')
+            admin_password = os.environ.get('ADMIN_PASSWORD')
+            
+            if not admin_email or not admin_password:
+                logger.error("ADMIN_EMAIL or ADMIN_PASSWORD not set in environment variables")
+                raise HTTPException(status_code=500, detail="Server configuration error: Admin credentials not configured")
+            
+            # Check email first
+            if user_data.email != admin_email:
+                logger.warning(f"Admin registration attempt with wrong email: {user_data.email} (expected: {admin_email})")
+                raise HTTPException(status_code=403, detail="Unauthorized: You are not authorized to register as admin. Please use the correct admin email.")
+            
+            # Check password
+            if user_data.password != admin_password:
+                logger.warning(f"Admin registration attempt with wrong password for email: {user_data.email}")
+                raise HTTPException(status_code=403, detail="Unauthorized: You are not authorized to register as admin. Please use the correct admin password.")
+        
+        # Create user
+        user = User(
+            email=user_data.email,
+            full_name=user_data.full_name,
+            role=user_data.role,
+            floor=user_data.floor,
+            room=user_data.room,
+            specialization=user_data.specialization
+        )
+        
+        user_dict = user.model_dump()
+        user_dict['password_hash'] = hash_password(user_data.password)
+        
+        await db.users.insert_one(user_dict)
+        
+        token = create_access_token({"sub": user.id})
+        return {"token": token, "user": user.model_dump()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 @api_router.post("/auth/login")
 async def login(login_data: LoginRequest):
@@ -594,20 +662,6 @@ async def mark_notification_read(notification_id: str, current_user: dict = Depe
 
 # Include router
 app.include_router(api_router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
