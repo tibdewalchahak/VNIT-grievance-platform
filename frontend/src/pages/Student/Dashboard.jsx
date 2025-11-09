@@ -252,7 +252,6 @@ export default function StudentDashboard() {
                       )}
                     </div>
                     <p className="text-gray-600 text-sm mb-1">{complaint.subcategory}</p>
-                    <p className="text-gray-700 mt-2">{complaint.description}</p>
                     {complaint.representative_id && (
                       <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
                         <p className="text-sm text-blue-800">
