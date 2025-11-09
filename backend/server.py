@@ -201,6 +201,14 @@ async def login(login_data: LoginRequest):
     if not user or not verify_password(login_data.password, user['password_hash']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
+    # Admin authorization check
+    if user['role'] == 'admin':
+        admin_email = os.environ.get('ADMIN_EMAIL')
+        admin_password = os.environ.get('ADMIN_PASSWORD')
+        
+        if login_data.email != admin_email or login_data.password != admin_password:
+            raise HTTPException(status_code=403, detail="Unauthorized: You are not authorized to login as admin")
+    
     token = create_access_token({"sub": user['id']})
     user_copy = user.copy()
     user_copy.pop('password_hash', None)
