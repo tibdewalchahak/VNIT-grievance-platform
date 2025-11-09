@@ -78,7 +78,7 @@ class Complaint(BaseModel):
     room: Optional[str] = None
     category: str
     subcategory: str
-    description: str
+    description: Optional[str] = None
     status: str = "Pending"  # Pending, Approved, Assigned, In Progress, Resolved, Cannot be Resolved, Completed, RequestedChanges, Rejected
     priority: str = "Low"  # Low, Medium, High, Urgent
     assigned_to: Optional[str] = None
