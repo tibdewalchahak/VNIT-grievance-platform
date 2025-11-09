@@ -66,7 +66,7 @@ class ComplaintCreate(BaseModel):
     room: Optional[str] = None
     category: str
     subcategory: str
-    description: str
+    description: Optional[str] = None
     media_url: Optional[str] = None
 
 class Complaint(BaseModel):
