@@ -71,8 +71,7 @@ export default function StudentDashboard() {
         floor: user?.floor || '',
         room: user?.room || '',
         category: '',
-        subcategory: '',
-        description: ''
+        subcategory: ''
       });
       fetchComplaints();
     } catch (error) {
